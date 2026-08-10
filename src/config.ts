@@ -81,6 +81,12 @@ export const config = {
     verifyLink: bool("APIDOC_VERIFY_LINK", true),
   },
   dbPath: str("DB_PATH", "./data/circulars.db"),
+  state: {
+    // Set on Cloud Run so the SQLite file survives the ephemeral filesystem.
+    // Unset locally, where the file on disk is already durable.
+    bucket: str("STATE_BUCKET", ""),
+    objectName: str("STATE_OBJECT", "circulars.db"),
+  },
   cron: {
     schedule: str("CRON_SCHEDULE", "30 8 * * 1-5"),
     timezone: str("CRON_TIMEZONE", "Asia/Kolkata"),

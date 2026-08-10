@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { config } from "./config.js";
 import { log } from "./logger.js";
 import { runOnce } from "./pipeline.js";
+import { withPersistentState } from "./storage/state.js";
 
 /**
  * Long-running daemon. Keeps a single process alive and fires the pipeline on the
@@ -23,7 +24,9 @@ export function startScheduler(): void {
     running = true;
     const startedAt = Date.now();
     try {
-      const summary = await runOnce();
+      // Sync remote state around each tick when STATE_BUCKET is configured, so
+      // the daemon deployment shape behaves like the job deployment shape.
+      const summary = await withPersistentState(() => runOnce());
       log.info(
         `Run complete in ${Math.round((Date.now() - startedAt) / 1000)}s: ` +
           `${summary.fetched} fetched, ${summary.inserted} new ` +

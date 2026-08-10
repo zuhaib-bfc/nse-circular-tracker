@@ -1,0 +1,32 @@
+# Dependencies are installed inside the image; a host node_modules built on
+# macOS would break the native better-sqlite3 binding on Linux.
+node_modules/
+
+# Build output is produced inside the image.
+dist/
+
+# Local SQLite state — on Cloud Run this lives in Cloud Storage.
+data/
+
+# Secrets must never enter the image. They arrive as env vars / Secret Manager.
+.env
+.env.local
+.env.*.local
+
+# VCS and CI
+.git/
+.gitignore
+.github/
+
+# Docs and editor noise
+*.md
+!README.md
+.vscode/
+.idea/
+.DS_Store
+
+# Logs and scratch
+*.log
+npm-debug.log*
+coverage/
+tmp/

@@ -9,6 +9,7 @@ import { log, setLogLevel } from "./logger.js";
 import { NseClient, daysAgo } from "./nse/client.js";
 import { sendTestEmail } from "./notify/mailer.js";
 import { backfill, runOnce } from "./pipeline.js";
+import { withPersistentState } from "./storage/state.js";
 
 setLogLevel(config.logLevel);
 
@@ -42,9 +43,21 @@ function numericFlag(args: string[], name: string, fallback: number): number {
   return parsed;
 }
 
+/** Commands that read or write the database, and so need remote state synced. */
+const STATEFUL_COMMANDS = new Set(["run", "backfill", "apidoc", "list", "stats"]);
+
 async function main(): Promise<void> {
   const [command = "help", ...args] = process.argv.slice(2);
 
+  // On Cloud Run the SQLite file lives in Cloud Storage between executions.
+  // Locally this is a no-op and the file on disk is used directly.
+  if (STATEFUL_COMMANDS.has(command)) {
+    return withPersistentState(() => dispatch(command, args));
+  }
+  return dispatch(command, args);
+}
+
+async function dispatch(command: string, args: string[]): Promise<void> {
   switch (command) {
     case "start": {
       startScheduler();

@@ -37,6 +37,9 @@ cron tick
 Step 7 is wrapped in its own error guard: if nseinvest.com changes its layout or
 goes down, the circular run still completes normally.
 
+**Deploying to GCP?** See [DEPLOYMENT.md](DEPLOYMENT.md) — Cloud Run Job + Cloud
+Scheduler, with Cloud Build redeploying on every push to `main`.
+
 ## Setup
 
 ```bash
@@ -244,7 +247,10 @@ next digest rather than silently dropped.
 
 ## Data
 
-SQLite at `DB_PATH` (default `./data/circulars.db`, gitignored):
+SQLite at `DB_PATH` (default `./data/circulars.db`, gitignored). On Cloud Run the
+filesystem is ephemeral, so setting `STATE_BUCKET` syncs this file to Cloud
+Storage around each run — see [DEPLOYMENT.md](DEPLOYMENT.md). Unset locally, where
+the file on disk is already durable.
 
 - **`circulars`** — every field NSE returns, plus `importance_level`,
   `importance_score`, `importance_reasons`, `importance_tags`, `classifier`

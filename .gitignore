@@ -5,3 +5,6 @@ data/
 .env
 .env.local
 .DS_Store
+
+# Cloud Run runtime config (copy of env.production.yaml.example with real values)
+env.production.yaml

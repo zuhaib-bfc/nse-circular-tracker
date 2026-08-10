@@ -1,0 +1,52 @@
+# Cloud Build pipeline: build the image, push it, and roll the Cloud Run Job
+# onto the new revision. Triggered on every push to main.
+#
+# Cloud Build workers are linux/amd64, which is what Cloud Run requires — this is
+# why building here is preferable to pushing from an Apple Silicon laptop.
+
+substitutions:
+  _REGION: asia-south1
+  _REPOSITORY: nse-tracker
+  _JOB_NAME: nse-circular-tracker
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/nse-circular-tracker
+
+steps:
+  # 1. Build, tagging with the commit SHA so every deploy is traceable to a commit.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_IMAGE}:${SHORT_SHA}
+      - --tag=${_IMAGE}:latest
+      # Reuse layers from the previous build so dependency installs are cached.
+      - --cache-from=${_IMAGE}:latest
+      - .
+
+  # 2. Push both tags.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, "${_IMAGE}"]
+
+  # 3. Point the existing job at the new image.
+  #    `jobs update` only changes the job definition; it does not execute it —
+  #    Cloud Scheduler remains the only thing that triggers real runs.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - ${_JOB_NAME}
+      - --image=${_IMAGE}:${SHORT_SHA}
+      - --region=${_REGION}
+
+images:
+  - ${_IMAGE}:${SHORT_SHA}
+  - ${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1200s
