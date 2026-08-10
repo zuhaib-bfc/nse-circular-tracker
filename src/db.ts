@@ -3,7 +3,14 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
 import { log } from "./logger.js";
-import type { Classification, ImportanceLevel, NseCircular, StoredCircular } from "./types.js";
+import type {
+  ApiDoc,
+  Classification,
+  ImportanceLevel,
+  NseCircular,
+  StoredApiDoc,
+  StoredCircular,
+} from "./types.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS circulars (
@@ -32,6 +39,20 @@ CREATE TABLE IF NOT EXISTS circulars (
 CREATE INDEX IF NOT EXISTS idx_circulars_date  ON circulars (cir_date DESC);
 CREATE INDEX IF NOT EXISTS idx_circulars_level ON circulars (importance_level);
 CREATE INDEX IF NOT EXISTS idx_circulars_notified ON circulars (notified_at);
+
+-- One row per (document, version) ever seen, so the table doubles as an audit
+-- trail of how the API spec has moved over time.
+CREATE TABLE IF NOT EXISTS api_docs (
+  doc_key       TEXT NOT NULL,
+  version       TEXT NOT NULL,
+  url           TEXT NOT NULL,
+  filename      TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  notified_at   TEXT,
+  PRIMARY KEY (doc_key, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_docs_notified ON api_docs (notified_at);
 
 CREATE TABLE IF NOT EXISTS runs (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +242,99 @@ export class CircularStore {
         )
         .get()?.finished_at ?? null;
     return { total, byLevel, unnotified, lastRun };
+  }
+
+  // ─── API documentation versions ───────────────────────────────────────────
+
+  /** Every version ever recorded for a document, newest insertion first. */
+  apiDocVersions(docKey: string): string[] {
+    return this.db
+      .prepare<[string], { version: string }>(
+        "SELECT version FROM api_docs WHERE doc_key = ?",
+      )
+      .all(docKey)
+      .map((row) => row.version);
+  }
+
+  /**
+   * Records a (doc, version) pair. `notified` is set true for baselines, so the
+   * first sighting of a document never produces a "version changed" alert.
+   * Returns false when this exact version was already on record.
+   */
+  insertApiDoc(doc: ApiDoc, notified: boolean): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO api_docs (doc_key, version, url, filename, first_seen_at, notified_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(doc.docKey, doc.version, doc.url, doc.filename, now, notified ? now : null);
+    return result.changes > 0;
+  }
+
+  /** Recorded API doc versions still awaiting an alert. */
+  pendingApiDocs(): StoredApiDoc[] {
+    return this.db
+      .prepare<[], {
+        doc_key: string;
+        version: string;
+        url: string;
+        filename: string;
+        first_seen_at: string;
+        notified_at: string | null;
+      }>("SELECT * FROM api_docs WHERE notified_at IS NULL")
+      .all()
+      .map((row) => ({
+        docKey: row.doc_key,
+        version: row.version,
+        url: row.url,
+        filename: row.filename,
+        first_seen_at: row.first_seen_at,
+        notified_at: row.notified_at,
+      }));
+  }
+
+  markApiDocsNotified(entries: { docKey: string; version: string }[]): void {
+    if (entries.length === 0) return;
+    const stamp = new Date().toISOString();
+    const statement = this.db.prepare(
+      "UPDATE api_docs SET notified_at = ? WHERE doc_key = ? AND version = ?",
+    );
+    this.db.transaction((rows: { docKey: string; version: string }[]) => {
+      for (const row of rows) statement.run(stamp, row.docKey, row.version);
+    })(entries);
+  }
+
+  /**
+   * Clears the sent-flag on a recorded version so the next notify pass re-sends
+   * it. Used by `apidoc check --force` to re-issue a message for review.
+   */
+  resetApiDocNotification(docKey: string, version: string): void {
+    this.db
+      .prepare("UPDATE api_docs SET notified_at = NULL WHERE doc_key = ? AND version = ?")
+      .run(docKey, version);
+  }
+
+  /** Full version history, newest first, for the CLI. */
+  apiDocHistory(): StoredApiDoc[] {
+    return this.db
+      .prepare<[], {
+        doc_key: string;
+        version: string;
+        url: string;
+        filename: string;
+        first_seen_at: string;
+        notified_at: string | null;
+      }>("SELECT * FROM api_docs ORDER BY doc_key ASC, first_seen_at DESC")
+      .all()
+      .map((row) => ({
+        docKey: row.doc_key,
+        version: row.version,
+        url: row.url,
+        filename: row.filename,
+        first_seen_at: row.first_seen_at,
+        notified_at: row.notified_at,
+      }));
   }
 
   startRun(windowFrom: string, windowTo: string): number {

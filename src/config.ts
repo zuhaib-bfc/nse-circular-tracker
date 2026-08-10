@@ -72,6 +72,14 @@ export const config = {
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
     ),
   },
+  apiDoc: {
+    enabled: bool("TRACK_API_DOCS", true),
+    pageUrl: str("APIDOC_PAGE_URL", "https://www.nseinvest.com/nsemfdesk/login.htm"),
+    // First capture group must be the version. Change this if NSE renames the file.
+    linkPattern: str("APIDOC_LINK_PATTERN", "NSEMF_API_Details_V([0-9]+(?:\\.[0-9]+)*)\\.pdf"),
+    // Ranged 1-byte GET to confirm the emailed link actually resolves.
+    verifyLink: bool("APIDOC_VERIFY_LINK", true),
+  },
   dbPath: str("DB_PATH", "./data/circulars.db"),
   cron: {
     schedule: str("CRON_SCHEDULE", "30 8 * * 1-5"),

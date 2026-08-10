@@ -2,6 +2,12 @@ import nodemailer, { type Transporter } from "nodemailer";
 import { assertMailConfigured, config } from "../config.js";
 import { log } from "../logger.js";
 import type { StoredCircular } from "../types.js";
+import {
+  buildApiDocHtml,
+  buildApiDocSubject,
+  buildApiDocText,
+  type ApiDocAlertEntry,
+} from "./apidoc-template.js";
 import { buildHtml, buildSubject, buildText } from "./template.js";
 
 let cached: Transporter | null = null;
@@ -45,6 +51,37 @@ export async function sendDigest(circulars: StoredCircular[]): Promise<boolean> 
   });
 
   log.info(`Emailed ${circulars.length} circular(s) to ${config.mail.to.join(", ")} (${info.messageId})`);
+  return true;
+}
+
+/**
+ * Sends the API-documentation version alert. Kept separate from the circular
+ * digest because it answers a different question and has its own recipients-facing
+ * shape: what changed, from which version, and where the new document lives.
+ */
+export async function sendApiDocAlert(entries: ApiDocAlertEntry[]): Promise<boolean> {
+  if (entries.length === 0) return false;
+
+  const subject = buildApiDocSubject(entries);
+  const html = buildApiDocHtml(entries);
+  const text = buildApiDocText(entries);
+
+  if (config.mail.dryRun) {
+    log.info(`[dry-run] Would email ${config.mail.to.join(", ") || "(no recipients)"}: ${subject}`);
+    log.debug(`[dry-run] Body:\n${text}`);
+    return true;
+  }
+
+  const info = await transporter().sendMail({
+    from: config.mail.from,
+    to: config.mail.to,
+    cc: config.mail.cc.length > 0 ? config.mail.cc : undefined,
+    subject,
+    text,
+    html,
+  });
+
+  log.info(`Emailed API doc update to ${config.mail.to.join(", ")} (${info.messageId})`);
   return true;
 }
 

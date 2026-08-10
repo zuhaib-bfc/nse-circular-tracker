@@ -1,3 +1,4 @@
+import { checkApiDocs, notifyApiDocChanges } from "./apidoc/tracker.js";
 import { Classifier } from "./classify/index.js";
 import { config } from "./config.js";
 import { CircularStore } from "./db.js";
@@ -13,6 +14,8 @@ export interface RunOptions {
   to?: Date;
   /** Skip the email step entirely (used by backfill). */
   skipNotify?: boolean;
+  /** Skip the API-doc check (backfill chunks would repeat it pointlessly). */
+  skipApiDocs?: boolean;
   store?: CircularStore;
 }
 
@@ -46,6 +49,8 @@ export async function runOnce(options: RunOptions = {}): Promise<RunSummary> {
     duplicates: 0,
     notified: 0,
     byLevel: { CRITICAL: 0, IMPORTANT: 0, ROUTINE: 0 },
+    apiDocUpgrades: 0,
+    apiDocsNotified: 0,
     windowFrom,
     windowTo,
   };
@@ -90,6 +95,20 @@ export async function runOnce(options: RunOptions = {}): Promise<RunSummary> {
       }
     }
 
+    // API doc tracking is deliberately after circulars and independently
+    // guarded: a layout change on nseinvest.com must never cost us a circular run.
+    if (config.apiDoc.enabled && !options.skipApiDocs) {
+      try {
+        const changes = await checkApiDocs(store);
+        summary.apiDocUpgrades = changes.filter((change) => change.kind === "upgrade").length;
+        if (!options.skipNotify) {
+          summary.apiDocsNotified = await notifyApiDocChanges(store, changes);
+        }
+      } catch (error) {
+        log.error(`API doc check failed (circulars were unaffected): ${String(error)}`);
+      }
+    }
+
     store.finishRun(runId, summary);
     return summary;
   } catch (error) {
@@ -112,6 +131,8 @@ export async function backfill(days: number, chunkDays = 30): Promise<RunSummary
     duplicates: 0,
     notified: 0,
     byLevel: { CRITICAL: 0, IMPORTANT: 0, ROUTINE: 0 },
+    apiDocUpgrades: 0,
+    apiDocsNotified: 0,
     windowFrom: formatNseDate(daysAgo(days)),
     windowTo: formatNseDate(new Date()),
   };
@@ -120,7 +141,7 @@ export async function backfill(days: number, chunkDays = 30): Promise<RunSummary
     for (let offset = 0; offset < days; offset += chunkDays) {
       const to = daysAgo(offset);
       const from = daysAgo(Math.min(offset + chunkDays - 1, days));
-      const chunk = await runOnce({ from, to, skipNotify: true, store });
+      const chunk = await runOnce({ from, to, skipNotify: true, skipApiDocs: true, store });
       total.fetched += chunk.fetched;
       total.inserted += chunk.inserted;
       total.duplicates += chunk.duplicates;

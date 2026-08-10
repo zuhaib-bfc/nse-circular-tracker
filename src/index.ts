@@ -28,7 +28,8 @@ export function startScheduler(): void {
         `Run complete in ${Math.round((Date.now() - startedAt) / 1000)}s: ` +
           `${summary.fetched} fetched, ${summary.inserted} new ` +
           `(${summary.byLevel.CRITICAL} critical / ${summary.byLevel.IMPORTANT} important / ${summary.byLevel.ROUTINE} routine), ` +
-          `${summary.notified} emailed`,
+          `${summary.notified} emailed` +
+          (summary.apiDocUpgrades > 0 ? `; ${summary.apiDocUpgrades} API doc update(s)` : ""),
       );
     } catch (error) {
       log.error(`Run failed: ${String(error)}`);

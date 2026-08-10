@@ -1,11 +1,15 @@
 # NSE Circular Tracker
 
-Watches the **Mutual Fund** department circulars on NSE India every day, stores new
-ones in SQLite, decides which are operationally important, and emails stakeholders
-when something needs attention — downtime, suspensions, cut-off changes, mock
-sessions.
+Watches two things on a daily schedule and emails stakeholders when either moves:
 
-Routine NFO launches (which dominate the feed) are recorded but never emailed.
+1. **Mutual Fund circulars** on NSE India — stored in SQLite, scored for
+   operational importance, alerting on downtime, suspensions, cut-off changes and
+   mock sessions. Routine NFO launches (which dominate the feed) are recorded but
+   never emailed.
+2. **The NSE MF Desk API specification** — the versioned PDF behind the
+   "API STRUCTURE" menu on [nseinvest.com](https://www.nseinvest.com/nsemfdesk/login.htm).
+   When the version number goes up, you get an email with a link to the new
+   document.
 
 ## How it works
 
@@ -24,9 +28,14 @@ cron tick
    ├─ 4. classify the genuinely new      keyword rules first; Gemini only for the
    │                                     ambiguous middle band
    ├─ 5. store                            SQLite, one row per circular
-   └─ 6. email                            one HTML digest of everything critical or
-                                          important that hasn't been sent yet
+   ├─ 6. email                            one HTML digest of everything critical or
+   │                                      important that hasn't been sent yet
+   └─ 7. check the API doc version        scrape nseinvest.com, compare against the
+                                          last version seen, email if it went up
 ```
+
+Step 7 is wrapped in its own error guard: if nseinvest.com changes its layout or
+goes down, the circular run still completes normally.
 
 ## Setup
 
@@ -78,7 +87,10 @@ node dist/cli.js backfill --days 180
 | `backfill --days N` | Import history without emailing (default 90) |
 | `classify "<subject>"` | Show how the rules score a subject line — use this to tune |
 | `list [--limit N]` | Recently stored circulars |
-| `stats` | Counts by level, last run time |
+| `stats` | Counts by level, last run time, current API doc version |
+| `apidoc check` | Check the API doc version now; alerts if it increased |
+| `apidoc check --force` | Re-send the alert for the current version (to review the email) |
+| `apidoc history` | Every API doc version recorded, with first-seen timestamps |
 | `test-email` | Verify SMTP and send a test message |
 
 Add `MAIL_DRY_RUN=true` to any command to log the email instead of sending it.
@@ -144,6 +156,78 @@ rule in `src/classify/rules.ts` or lower `IMPORTANT_THRESHOLD`. Changing weights
 does **not** retroactively reclassify stored circulars — delete
 `data/circulars.db` and re-backfill if you want a clean re-score.
 
+## API documentation tracking
+
+The "API STRUCTURE" menu on [NSE MF Desk](https://www.nseinvest.com/nsemfdesk/login.htm)
+links a versioned spec PDF, currently:
+
+```
+/nsemfdesk/resources/upload/apidetails/NSEMF_API_Details_V1.9.7.pdf
+```
+
+The page is plain server-rendered HTML, so this is an ordinary anchor scrape — no
+browser automation needed. Every `href` is matched against `APIDOC_LINK_PATTERN`,
+whose **first capture group must be the version**:
+
+```
+APIDOC_LINK_PATTERN=NSEMF_API_Details_V([0-9]+(?:\.[0-9]+)*)\.pdf
+```
+
+The version token is stripped from the filename to form a stable `doc_key`
+(`NSEMF_API_Details`), so successive releases are recognised as the same document.
+
+**Versions are compared numerically, segment by segment** — `1.9.10` is correctly
+newer than `1.9.7`, which a string comparison would get backwards.
+
+What happens on each outcome:
+
+| Outcome | Behaviour |
+|---|---|
+| **First ever sighting** | Recorded as a silent baseline — *no email*. Otherwise day one would alert "the API docs changed" when nothing has. Use `apidoc check --force` if you do want that first message. |
+| **Version increased** | Recorded and emailed, showing `v1.9.6 → v1.9.7` and a link to the new PDF. |
+| **Same version** | Nothing. |
+| **Version decreased** | Recorded for the audit trail, logged as a warning, *not* emailed — NSE rolled a document back. |
+| **Pattern matched nothing** | Logged as a warning. This usually means NSE renamed the file, which is itself worth investigating — fix `APIDOC_LINK_PATTERN` and re-run. |
+
+Check it by hand at any time:
+
+```bash
+$ node dist/cli.js apidoc check
+unchanged  NSEMF_API_Details v1.9.7 -> v1.9.7
+           https://www.nseinvest.com/nsemfdesk/resources/upload/apidetails/NSEMF_API_Details_V1.9.7.pdf
+
+$ node dist/cli.js apidoc history
+NSEMF_API_Details      v1.9.7      alerted  first seen 2026-08-10T10:11:33.574Z
+NSEMF_API_Details      v1.9.6      alerted  first seen 2026-08-10T10:11:33.000Z
+```
+
+### Two kinds of message
+
+The email changes wording depending on whether there is a prior version, so a
+baseline never reads as a false alarm:
+
+| | Subject | Tone |
+|---|---|---|
+| **Baseline** (no prior version) | `[API DOCS] Now tracking NSEMF API Details — currently v1.9.7` | "Nothing has changed yet — this confirms the watch is live." |
+| **Upgrade** | `[API DOCS] NSEMF API Details updated — v1.9.6 → v1.9.7` | "The version number changed — review the document." |
+
+To see either format without waiting for NSE to publish, re-send on demand:
+
+```bash
+node dist/cli.js apidoc check --force            # sends to MAIL_TO
+MAIL_TO=you@example.com node dist/cli.js apidoc check --force   # just you
+MAIL_DRY_RUN=true node dist/cli.js apidoc check --force         # print, don't send
+```
+
+`--force` clears the sent-flag for the current version and re-queues it; normal
+runs remain deduplicated.
+
+Set `TRACK_API_DOCS=false` to turn the whole feature off.
+
+**Note on the PDF link.** nseinvest.com blocks `HEAD` requests (403) and requires a
+`Referer` on `GET`, so `APIDOC_VERIFY_LINK` uses a 1-byte ranged GET rather than
+downloading the ~3 MB file. The link in the email opens normally in a browser.
+
 ## Deduplication
 
 `circDisplayNo` (e.g. `NSE/NMF/75630`) is the primary key. The dedup check runs
@@ -165,6 +249,8 @@ SQLite at `DB_PATH` (default `./data/circulars.db`, gitignored):
 - **`circulars`** — every field NSE returns, plus `importance_level`,
   `importance_score`, `importance_reasons`, `importance_tags`, `classifier`
   (`rules` or `llm`), `first_seen_at`, `notified_at`
+- **`api_docs`** — one row per `(document, version)` ever seen, so the table
+  doubles as a history of how the API spec has moved, plus `notified_at`
 - **`runs`** — one row per cycle with window, counts, and any error, for
   after-the-fact "did it run last Tuesday?" questions
 

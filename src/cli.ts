@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { compareVersions } from "./apidoc/scraper.js";
+import { checkApiDocs, notifyApiDocChanges } from "./apidoc/tracker.js";
 import { classifyByRules } from "./classify/index.js";
 import { config } from "./config.js";
 import { CircularStore } from "./db.js";
@@ -18,6 +20,8 @@ const USAGE = `nse-circular-tracker
   classify "<subject>"  Show how the keyword rules score a subject line
   list [--limit N]      Show recently stored circulars
   stats                 Show database counts
+  apidoc [check]        Check the NSE MF Desk API doc version now (alerts if newer)
+  apidoc history        Show every API doc version recorded so far
   test-email            Verify SMTP settings and send a test message
 
 Configuration lives in .env — copy .env.example to get started.`;
@@ -55,6 +59,9 @@ async function main(): Promise<void> {
       );
       log.info(
         `Breakdown — critical ${summary.byLevel.CRITICAL}, important ${summary.byLevel.IMPORTANT}, routine ${summary.byLevel.ROUTINE}`,
+      );
+      log.info(
+        `API docs — ${summary.apiDocUpgrades} new version(s), ${summary.apiDocsNotified} emailed`,
       );
       return;
     }
@@ -128,6 +135,67 @@ async function main(): Promise<void> {
         // the record but never cross the alert bar unless NOTIFY_ON_ROUTINE=true.
         console.log(`Never emailed:        ${stats.unnotified}`);
         console.log(`Last run finished:    ${stats.lastRun ?? "never"}`);
+
+        const docs = store.apiDocHistory();
+        const latestByKey = new Map<string, string>();
+        for (const doc of docs) {
+          const seen = latestByKey.get(doc.docKey);
+          if (!seen || compareVersions(doc.version, seen) > 0) latestByKey.set(doc.docKey, doc.version);
+        }
+        console.log(
+          `\nAPI docs tracked:     ${latestByKey.size === 0 ? "none yet" : ""}`.trimEnd(),
+        );
+        for (const [key, version] of latestByKey) {
+          console.log(`  ${key}: v${version}`);
+        }
+      } finally {
+        store.close();
+      }
+      return;
+    }
+
+    case "apidoc": {
+      const store = new CircularStore();
+      try {
+        const sub = args[0] ?? "check";
+        if (sub === "history") {
+          const rows = store.apiDocHistory();
+          if (rows.length === 0) {
+            console.log("No API doc versions recorded yet. Run `nse-circulars apidoc check`.");
+            return;
+          }
+          for (const row of rows) {
+            const mark = row.notified_at ? "alerted" : "pending";
+            console.log(
+              `${row.docKey.padEnd(22)} v${row.version.padEnd(10)} ${mark.padEnd(8)} first seen ${row.first_seen_at}`,
+            );
+          }
+          return;
+        }
+        // Default: scrape, reconcile, and alert on any version increase.
+        const changes = await checkApiDocs(store);
+        if (changes.length === 0) {
+          console.log("No API documents matched APIDOC_LINK_PATTERN — see the warning above.");
+          process.exitCode = 1;
+          return;
+        }
+        // --force re-queues the current version even if it was already recorded
+        // or sent, so you can review the email format on demand.
+        if (args.includes("--force")) {
+          for (const change of changes) {
+            store.resetApiDocNotification(change.doc.docKey, change.doc.version);
+          }
+          log.info(`--force: re-queued ${changes.length} document(s) for emailing`);
+        }
+        for (const change of changes) {
+          const from = change.previousVersion ? `v${change.previousVersion} -> ` : "";
+          console.log(
+            `${change.kind.padEnd(10)} ${change.doc.docKey} ${from}v${change.doc.version}`,
+          );
+          console.log(`           ${change.doc.url}`);
+        }
+        const notified = await notifyApiDocChanges(store, changes);
+        if (notified > 0) console.log(`\nEmailed ${notified} API doc update(s).`);
       } finally {
         store.close();
       }
