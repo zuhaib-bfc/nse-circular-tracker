@@ -2,7 +2,7 @@
 
 Watches two things on a daily schedule and emails stakeholders when either moves:
 
-1. **Mutual Fund circulars** on NSE India — stored in SQLite, scored for
+1. **Mutual Fund circulars** on NSE India and BSE (BSE StAR MF notices) — stored in SQLite, scored for
    operational importance, alerting on downtime, suspensions, cut-off changes and
    mock sessions. Routine NFO launches (which dominate the feed) are recorded but
    never emailed.
@@ -80,6 +80,20 @@ Backfill stores and classifies everything but suppresses all alerts:
 ```bash
 node dist/cli.js backfill --days 180
 ```
+
+## BSE circulars
+
+BSE notices are fetched alongside NSE over `BSE_LOOKBACK_DAYS` (`BSE_SEGMENT`, default
+"Mutual Fund", all departments and categories), mapped to the same record shape,
+and pushed through the same dedup → classify → store → digest path. NSE and BSE
+circulars therefore land in one table, are scored by the same rules and Gemini
+fallback, and arrive in **one** grouped email (each card is tagged with its exchange
+and links to the PDF). A failure on one exchange is logged and the other still runs.
+
+BSE's API (`api.bseindia.com`) is fetched over plain HTTP; it only needs `Origin` and
+`Referer` headers pointing at bseindia.com, so no browser or display is involved. To add
+another exchange, write a client that returns `NseCircular`-shaped records and add
+it to `runOnce` in `src/pipeline.ts`.
 
 ## Commands
 

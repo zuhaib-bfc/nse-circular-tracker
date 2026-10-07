@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import type { Classification, ImportanceLevel, NseCircular } from "../types.js";
 
-const SYSTEM_PROMPT = `You classify NSE (National Stock Exchange of India) circulars issued by the Mutual Fund department, for an operations and compliance team that runs a mutual fund distribution platform integrated with NSE MF Invest.
+const SYSTEM_PROMPT = `You classify NSE and BSE (Indian stock exchange) circulars issued by their Mutual Fund departments, for an operations and compliance team that runs a mutual fund distribution platform integrated with NSE MF Invest and BSE StAR MF.
 
 Judge only how much the circular demands attention or action from that team. You are given the circular's subject line, which is all the exchange publishes in the listing.
 
