@@ -38,6 +38,7 @@ export function startScheduler(): void {
             ? `; ${summary.apiDocUpgrades} API doc update(s)`
             : ""),
       );
+      for (const failure of summary.failures) log.error(`Partial failure — ${failure}`);
     } catch (error) {
       // The stack matters here: this is the only record of a failed unattended
       // run, and the scheduler swallows the error to stay alive.

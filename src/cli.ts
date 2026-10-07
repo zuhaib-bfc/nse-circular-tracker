@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { compareVersions } from "./apidoc/scraper.js";
 import { checkApiDocs, notifyApiDocChanges } from "./apidoc/tracker.js";
+import { BseClient } from "./bse/client.js";
 import { classifyByRules } from "./classify/index.js";
 import { config } from "./config.js";
 import { CircularStore } from "./db.js";
@@ -43,6 +44,16 @@ function numericFlag(args: string[], name: string, fallback: number): number {
   return parsed;
 }
 
+/**
+ * A run that lost one exchange still stored and emailed the rest, but it must not
+ * look successful: exit non-zero so Cloud Run / cron mark the execution failed.
+ */
+function reportFailures(failures: string[]): void {
+  if (failures.length === 0) return;
+  for (const failure of failures) log.error(`Partial failure — ${failure}`);
+  process.exitCode = 1;
+}
+
 /** Commands that read or write the database, and so need remote state synced. */
 const STATEFUL_COMMANDS = new Set(["run", "backfill", "apidoc", "list", "stats"]);
 
@@ -65,8 +76,9 @@ async function dispatch(command: string, args: string[]): Promise<void> {
     }
 
     case "run": {
-      const days = numericFlag(args, "days", config.nse.lookbackDays);
-      const summary = await runOnce({ from: daysAgo(days) });
+      // Without --days each exchange uses its own lookback (NSE_/BSE_LOOKBACK_DAYS).
+      const days = flag(args, "days") === undefined ? undefined : numericFlag(args, "days", 0);
+      const summary = await runOnce(days === undefined ? {} : { from: daysAgo(days) });
       log.info(
         `Done: ${summary.fetched} fetched, ${summary.inserted} new, ${summary.duplicates} duplicates, ${summary.notified} emailed`,
       );
@@ -76,6 +88,7 @@ async function dispatch(command: string, args: string[]): Promise<void> {
       log.info(
         `API docs — ${summary.apiDocUpgrades} new version(s), ${summary.apiDocsNotified} emailed`,
       );
+      reportFailures(summary.failures);
       return;
     }
 
@@ -87,6 +100,7 @@ async function dispatch(command: string, args: string[]): Promise<void> {
       log.info(
         `Breakdown — critical ${summary.byLevel.CRITICAL}, important ${summary.byLevel.IMPORTANT}, routine ${summary.byLevel.ROUTINE}`,
       );
+      reportFailures(summary.failures);
       return;
     }
 
@@ -222,15 +236,23 @@ async function dispatch(command: string, args: string[]): Promise<void> {
 
     case "peek": {
       // Undocumented helper: fetch and score without touching the database.
-      const days = numericFlag(args, "days", 7);
-      const circulars = await new NseClient().fetchCirculars(daysAgo(days), new Date());
-      for (const circular of circulars) {
-        const verdict = classifyByRules(circular);
-        console.log(
-          `${verdict.level.padEnd(9)} ${String(verdict.score).padStart(3)}  ${circular.circDisplayNo.padEnd(16)} ${circular.sub}`,
-        );
+      // --days overrides both exchanges; otherwise each uses its own lookback.
+      const now = new Date();
+      const nseDays = numericFlag(args, "days", config.nse.lookbackDays);
+      const bseDays = numericFlag(args, "days", config.bse.lookbackDays);
+      const batches = [
+        { name: "NSE", days: nseDays, circulars: await new NseClient().fetchCirculars(daysAgo(nseDays), now) },
+        { name: "BSE", days: bseDays, circulars: await new BseClient().fetchCirculars(daysAgo(bseDays), now) },
+      ];
+      for (const { name, days, circulars } of batches) {
+        for (const circular of circulars) {
+          const verdict = classifyByRules(circular);
+          console.log(
+            `${name} ${verdict.level.padEnd(9)} ${String(verdict.score).padStart(3)}  ${circular.circDisplayNo.padEnd(16)} ${circular.sub}`,
+          );
+        }
+        console.log(`\n${name}: ${circulars.length} circulars over the last ${days} day(s)\n`);
       }
-      console.log(`\n${circulars.length} circulars over the last ${days} day(s)`);
       return;
     }
 

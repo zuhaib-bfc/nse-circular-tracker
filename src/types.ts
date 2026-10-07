@@ -74,4 +74,6 @@ export interface RunSummary {
   apiDocUpgrades: number;
   /** API doc alerts actually emailed during this run. */
   apiDocsNotified: number;
+  /** Exchanges whose fetch failed while the run carried on with the rest, e.g. "BSE: ...". */
+  failures: string[];
 }
